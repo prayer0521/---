@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>青元剑阵 · 古剑版</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #000; font-family: 'Microsoft YaHei', sans-serif; color: #fff; }
+        
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        
+        .camera-box {
+            position: fixed; bottom: 20px; right: 20px; width: 320px; height: 240px;
+            border: 2px solid rgba(184, 134, 11, 0.5); /* 古铜色边框 */
+            border-radius: 10px; overflow: hidden; z-index: 100;
+            background: #000; box-shadow: 0 0 20px rgba(184,134,11,0.3); display: none;
+            /* 移除 transform: scaleX(-1) */
+        }
+        #video-input { position: absolute; width: 100%; height: 100%; object-fit: cover; }
+        #debug-canvas { position: absolute; width: 100%; height: 100%; }
+        .camera-status {
+            position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.8);
+            padding: 5px 10px; border-radius: 4px; font-size: 12px; color: #ffd700; z-index: 101;
+        }
+
+        .panel { position: absolute; background: rgba(20, 15, 5, 0.9); /* 暖色暗调 */
+                 border: 1px solid rgba(255, 215, 0, 0.3); border-radius: 12px; padding: 20px; z-index: 50; }
+        #main-panel { top: 20px; left: 20px; width: 320px; }
+        #gesture-panel { top: 20px; right: 20px; width: 280px; text-align: center; }
+        
+        .title { font-size: 28px; background: linear-gradient(45deg, #ffd700, #b8860b); 
+                 -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
+                 margin-bottom: 15px; font-weight: bold; }
+        
+        .info-row { display: flex; justify-content: space-between; margin: 10px 0; font-size: 14px; align-items: center; }
+        .label { color: rgba(255, 215, 0, 0.7); }
+        .value { color: #fff; font-weight: bold; }
+        
+        .gesture-display { font-size: 50px; margin: 15px 0; filter: drop-shadow(0 0 20px rgba(255,215,0,0.6)); }
+        .gesture-name { color: #ffd700; font-size: 18px; margin-bottom: 10px; font-weight: bold; }
+        
+        .controls { position: fixed; bottom: 20px; left: 20px; display: flex; gap: 10px; z-index: 50; flex-wrap: wrap; }
+        .btn { background: rgba(184, 134, 11, 0.1); border: 1px solid rgba(255, 215, 0, 0.3); 
+               color: #ffd700; padding: 12px 24px; border-radius: 6px; cursor: pointer; 
+               font-size: 14px; transition: all 0.3s; pointer-events: auto; font-weight: bold; }
+        .btn:hover { background: rgba(255, 215, 0, 0.2); transform: translateY(-2px); box-shadow: 0 5px 20px rgba(255,215,0,0.3); }
+        .btn.active { background: rgba(255, 215, 0, 0.4); color: #000; box-shadow: 0 0 30px rgba(255,215,0,0.6); }
+        
+        #overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+                   background: rgba(0,0,0,0.95); z-index: 1000; display: flex; 
+                   flex-direction: column; justify-content: center; align-items: center; }
+        .spinner { width: 60px; height: 60px; border: 4px solid rgba(184,134,11,0.1); 
+                   border-top-color: #ffd700; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        .indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; 
+                     margin-right: 8px; background: #ff4444; }
+        .indicator.active { background: #00ff88; box-shadow: 0 0 10px #00ff88; }
+        .indicator.warning { background: #ffaa00; }
+        
+        .attack-indicator {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 100px; height: 100px; border: 3px solid rgba(255, 69, 0, 0.8);
+            border-radius: 50%; opacity: 0; pointer-events: none; z-index: 30;
+            box-shadow: 0 0 50px rgba(255,69,0,0.5), inset 0 0 50px rgba(255,69,0,0.3);
+        }
+        .attack-indicator.active { animation: targetLock 2s infinite; opacity: 1; }
+        @keyframes targetLock {
+            0% { transform: translate(-50%, -50%) scale(0.8); opacity: 0.8; }
+            50% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(0.8); opacity: 0.8; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div class="attack-indicator" id="attack-indicator"></div>
+
+    <div class="camera-box" id="camera-box">
+        <video id="video-input" playsinline></video>
+        <canvas id="debug-canvas"></canvas>
+        <div class="camera-status">
+            <span class="indicator" id="track-indicator"></span>
+            <span id="track-text">未启动</span>
+        </div>
+    </div>
+
+    <div id="main-panel" class="panel">
+        <div class="title">青元剑阵 · 古剑版</div>
+        <div class="info-row"><span class="label">飞剑品阶</span><span class="value" style="color:#ffd700">越王级 (36柄)</span></div>
+        <div class="info-row"><span class="label">操控模式</span><span class="value" id="mode-text">初始化中...</span></div>
+        <div class="info-row"><span class="label">剑阵状态</span><span class="value" id="array-state" style="color:#ffd700">运转中</span></div>
+        <div class="info-row"><span class="label">当前阵图</span><span class="value" id="formation-name">大周天</span></div>
+        <div class="info-row"><span class="label">锁定目标</span><span class="value" id="target-info">无</span></div>
+    </div>
+
+    <div id="gesture-panel" class="panel">
+        <div class="gesture-name" id="gesture-name">准备就绪</div>
+        <div class="gesture-display" id="gesture-icon">🗡️</div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:10px;">
+            灵力消耗: <span id="energy" style="color:#ffd700">100%</span>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button class="btn active" onclick="setFormation('IDLE')">收剑 (0)</button>
+        <button class="btn" onclick="setFormation('CIRCLE')">大庚剑阵 (1)</button>
+        <button class="btn" onclick="setFormation('ATTACK')">青元突刺 (2)</button>
+        <button class="btn" onclick="setFormation('SPHERE')">天罡护体 (3)</button>
+        <button class="btn" onclick="setFormation('SCATTER')">万剑归宗 (4)</button>
+        <button class="btn" onclick="toggleCamera()" id="cam-btn">开启摄像头</button>
+    </div>
+
+    <div id="overlay">
+        <div class="spinner"></div>
+        <h2 style="color:#ffd700;margin-bottom:10px;">正在铸剑...</h2>
+        <p style="color:rgba(255,255,255,0.6);">淬炼青铜 | 锻造剑脊 | 编织暗纹</p>
+        <button class="btn" onclick="forceStart()" style="margin-top:30px;display:none;" id="start-btn">进入剑阵</button>
+    </div>
+
+    <script>
+        // ================= 生成青铜菱形暗纹纹理 =================
+        function createBronzeTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            
+            // 青铜底色渐变
+            const grad = ctx.createLinearGradient(0, 0, 0, 512);
+            grad.addColorStop(0, '#d4af37');
+            grad.addColorStop(0.5, '#b8860b');
+            grad.addColorStop(1, '#8b7508');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 512, 512);
+            
+            // 菱形暗纹（越王勾践剑风格）
+            ctx.fillStyle = 'rgba(60, 40, 10, 0.4)';
+            const rows = 16;
+            const cols = 8;
+            const cellW = 512 / cols;
+            const cellH = 512 / rows;
+            
+            for(let i=0; i<rows; i++) {
+                for(let j=0; j<cols; j++) {
+                    if((i+j)%2 === 0) {
+                        ctx.beginPath();
+                        const cx = j * cellW + cellW/2;
+                        const cy = i * cellH + cellH/2;
+                        ctx.moveTo(cx, cy - cellH/3);
+                        ctx.lineTo(cx + cellW/3, cy);
+                        ctx.lineTo(cx, cy + cellH/3);
+                        ctx.lineTo(cx - cellW/3, cy);
+                        ctx.closePath();
+                        ctx.fill();
+                    }
+                }
+            }
+            
+            // 岁月锈迹
+            for(let i=0; i<100; i++) {
+                ctx.fillStyle = `rgba(80, 60, 20, ${Math.random()*0.3})`;
+                ctx.fillRect(Math.random()*512, Math.random()*512, 2, 20);
+            }
+            
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        // ================= 全局状态 =================
+        const state = {
+            formation: 'IDLE',
+            targetFormation: 'IDLE',
+            handDetected: false,
+            handX: 0, handY: 0,
+            cameraActive: false,
+            time: 0,
+            useMouse: true,
+            mouseX: 0, mouseY: 0,
+            targetPoint: new THREE.Vector3(0, 0, -20),
+            attackPhase: 0,
+            swords: [],
+            transitionProgress: 0,
+            prevFormation: 'IDLE',
+            currentGesture: 'NONE',
+            gestureDebounce: 0
+        };
+
+        // ================= 古剑类（越王勾践剑风格） =================
+        class AncientSword {
+            constructor(scene, index) {
+                this.index = index;
+                this.mesh = new THREE.Group();
+                this.trailPositions = [];
+                this.maxTrail = 30;
+                this.createSwordModel();
+                this.createTrail(scene);
+                this.createGlow(scene);
+                scene.add(this.mesh);
+                
+                const angle = (index / 36) * Math.PI * 2;
+                this.mesh.position.set(Math.cos(angle)*5, Math.sin(angle)*3, -5);
+                this.mesh.rotation.z = Math.PI;
+            }
+
+            createSwordModel() {
+                // 1. 剑身 - 修长八面剑，带菱形暗纹
+                const bladeGeom = new THREE.BoxGeometry(0.1, 4.2, 0.18, 2, 8, 2);
+                const pos = bladeGeom.attributes.position.array;
+                
+                // 压薄两侧成刃，中间厚（剑脊）
+                for(let i=0; i<pos.length; i+=3) {
+                    const x = pos[i];
+                    const y = pos[i+1];
+                    const z = pos[i+2];
+                    
+                    // 两侧压薄
+                    if(Math.abs(x) > 0.03) pos[i+2] *= 0.2;
+                    
+                    // 剑尖收细
+                    if(y > 1.8) {
+                        const taper = (2.1 - y) / 0.3;
+                        const factor = Math.max(0.05, taper);
+                        pos[i] *= factor;
+                        pos[i+2] *= factor;
+                    }
+                }
+                bladeGeom.computeVertexNormals();
+                
+                // 青铜材质
+                const bronzeTexture = createBronzeTexture();
+                const bladeMat = new THREE.MeshStandardMaterial({
+                    map: bronzeTexture,
+                    color: 0xffd700,
+                    metalness: 0.9,
+                    roughness: 0.4,
+                    bumpMap: bronzeTexture,
+                    bumpScale: 0.02,
+                    emissive: 0x221100,
+                    emissiveIntensity: 0.2
+                });
+                
+                const blade = new THREE.Mesh(bladeGeom, bladeMat);
+                blade.position.y = 0.6;
+                
+                // 2. 剑格 - 圆盘状兽首纹（简化）
+                const guardGeom = new THREE.CylinderGeometry(0.45, 0.45, 0.12, 6);
+                const guardMat = new THREE.MeshStandardMaterial({
+                    color: 0x2f4f4f, // 深青灰（青铜锈）
+                    metalness: 0.8,
+                    roughness: 0.6
+                });
+                const guard = new THREE.Mesh(guardGeom, guardMat);
+                guard.rotation.z = Math.PI / 2;
+                guard.position.y = -1.5;
+                
+                // 绿松石镶嵌
+                const inlayGeom = new THREE.CylinderGeometry(0.12, 0.12, 0.14, 6);
+                const inlayMat = new THREE.MeshBasicMaterial({ color: 0x40e0d0 });
+                const inlay = new THREE.Mesh(inlayGeom, inlayMat);
+                inlay.rotation.z = Math.PI / 2;
+                inlay.position.y = -1.5;
+                
+                // 3. 剑柄 - 缠绕丝绳（黑色同心圆）
+                const handleGeom = new THREE.CylinderGeometry(0.09, 0.11, 1.0, 16, 4);
+                const handleMat = new THREE.MeshStandardMaterial({
+                    color: 0x1a1a1a,
+                    roughness: 0.9
+                });
+                const handle = new THREE.Mesh(handleGeom, handleMat);
+                handle.position.y = -2.0;
+                
+                // 4. 剑首 - 圆盘状（越王剑特征）
+                const pommelBase = new THREE.CylinderGeometry(0.22, 0.18, 0.1, 32);
+                const pommelTop = new THREE.SphereGeometry(0.18, 32, 16, 0, Math.PI*2, 0, Math.PI/2);
+                const pommelMat = new THREE.MeshStandardMaterial({
+                    color: 0x2f4f4f,
+                    metalness: 0.8,
+                    roughness: 0.5
+                });
+                const pommel1 = new THREE.Mesh(pommelBase, pommelMat);
+                pommel1.position.y = -2.6;
+                const pommel2 = new THREE.Mesh(pommelTop, pommelMat);
+                pommel2.position.y = -2.55;
+                
+                // 5. 剑穗 - 深红丝绦
+                const tasselGeom = new THREE.ConeGeometry(0.04, 1.0, 8);
+                const tasselMat = new THREE.MeshBasicMaterial({ 
+                    color: 0x8b0000, 
+                    transparent: true, 
+                    opacity: 0.8 
+                });
+                const tassel = new THREE.Mesh(tasselGeom, tasselMat);
+                tassel.position.y = -3.2;
+                tassel.rotation.x = Math.PI;
+                
+                // 6. 暖色光源（代替冷色）
+                this.swordLight = new THREE.PointLight(0xffd700, 1.5, 5);
+                this.swordLight.position.y = 0.5;
+                
+                this.mesh.add(blade, guard, inlay, handle, pommel1, pommel2, tassel, this.swordLight);
+                this.mesh.scale.set(0.85, 0.85, 0.85);
+            }
+
+            createTrail(scene) {
+                const geometry = new THREE.BufferGeometry();
+                const positions = new Float32Array(this.maxTrail * 3);
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                
+                // 金色拖尾
+                const material = new THREE.LineBasicMaterial({
+                    color: 0xffd700,
+                    transparent: true,
+                    opacity: 0.4,
+                    blending: THREE.AdditiveBlending
+                });
+                
+                this.trailLine = new THREE.Line(geometry, material);
+                this.trailLine.frustumCulled = false;
+                scene.add(this.trailLine);
+            }
+
+            createGlow(scene) {
+                // 暖色辉光
+                const canvas = document.createElement('canvas');
+                canvas.width = 128; canvas.height = 128;
+                const ctx = canvas.getContext('2d');
+                const grad = ctx.createRadialGradient(64,64,0,64,64,64);
+                grad.addColorStop(0, 'rgba(255, 215, 0, 0.8)');
+                grad.addColorStop(0.4, 'rgba(184, 134, 11, 0.3)');
+                grad.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.fillStyle = grad;
+                ctx.fillRect(0,0,128,128);
+                
+                const texture = new THREE.CanvasTexture(canvas);
+                const material = new THREE.SpriteMaterial({
+                    map: texture,
+                    color: 0xffd700,
+                    transparent: true,
+                    opacity: 0.4,
+                    blending: THREE.AdditiveBlending
+                });
+                
+                this.glowSprite = new THREE.Sprite(material);
+                this.glowSprite.scale.set(4, 4, 1);
+                this.mesh.add(this.glowSprite);
+            }
+
+            update(formation, time, target, handPos, attackProgress, transitionProgress, prevFormation) {
+                this.updateTrail();
+                this.updateGlow(time);
+                
+                const currPos = this.getFormationPos(formation, time, handPos, attackProgress);
+                const prevPos = this.getFormationPos(prevFormation, time, handPos, attackProgress);
+                const finalPos = new THREE.Vector3().lerpVectors(prevPos, currPos, transitionProgress);
+                
+                this.mesh.position.lerp(finalPos, 0.12);
+                this.updateRotation(formation, time, handPos, target, attackProgress);
+                
+                // 暖色灯光
+                const colors = { 
+                    'IDLE': 0xffaa00, 
+                    'CIRCLE': 0xffd700, 
+                    'ATTACK': 0xff4500, 
+                    'SPHERE': 0x00ff88, 
+                    'SCATTER': 0xff6600 
+                };
+                this.swordLight.color.setHex(colors[formation] || 0xffaa00);
+                this.swordLight.intensity = 1.2 + Math.sin(time * 3) * 0.4;
+            }
+
+            getFormationPos(form, time, handPos, attackProgress) {
+                const i = this.index;
+                const angle = (i / 36) * Math.PI * 2 + time * 0.1;
+                const pos = new THREE.Vector3();
+                
+                switch(form) {
+                    case 'CIRCLE':
+                        const r = 6 + Math.sin(time + i) * 0.5;
+                        const height = Math.sin(angle * 4 + time * 0.8) * 2;
+                        pos.set(
+                            handPos.x + Math.cos(angle + time * 0.6) * r,
+                            handPos.y + Math.sin(angle + time * 0.6) * r * 0.7 + height,
+                            Math.cos(angle + time * 1.2) * 3
+                        );
+                        break;
+                    case 'ATTACK':
+                        if(attackProgress < 0.3) {
+                            const coneAngle = (i % 6) / 6 * Math.PI * 0.4 - Math.PI * 0.2;
+                            const coneRow = Math.floor(i / 6);
+                            pos.set(
+                                handPos.x + Math.cos(coneAngle) * (coneRow * 0.4),
+                                handPos.y + Math.sin(coneAngle) * (coneRow * 0.4),
+                                handPos.z - 3 - coneRow * 0.6
+                            );
+                        } else if(attackProgress < 0.5) {
+                            pos.set(handPos.x * 0.6, handPos.y * 0.6, 6);
+                        } else {
+                            const spread = 0.15;
+                            const offsetX = (i % 5 - 2) * spread;
+                            const offsetY = (Math.floor(i / 5) - 2) * spread;
+                            pos.set(
+                                handPos.x + offsetX * 12,
+                                handPos.y + offsetY * 12,
+                                -12 - (attackProgress - 0.5) * 60
+                            );
+                        }
+                        break;
+                    case 'SPHERE':
+                        const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+                        const theta = goldenAngle * i;
+                        const phi = Math.acos(1 - 2 * (i + 0.5) / 36);
+                        const rad = 5 + Math.sin(time) * 0.3;
+                        pos.set(
+                            handPos.x + rad * Math.cos(theta) * Math.sin(phi),
+                            handPos.y + rad * Math.sin(theta) * Math.sin(phi),
+                            handPos.z + rad * Math.cos(phi)
+                        );
+                        break;
+                    case 'SCATTER':
+                        const scatterAngle = angle + i * 0.6 + time * 0.5;
+                        const distance = 18 + Math.sin(time + i * 0.5) * 6;
+                        pos.set(
+                            handPos.x + Math.cos(scatterAngle) * distance,
+                            handPos.y + Math.sin(scatterAngle) * distance,
+                            (i / 36 - 0.5) * 25 + Math.sin(time + i) * 5
+                        );
+                        break;
+                    default:
+                        const floatRadius = 7 + Math.sin(i) * 1;
+                        pos.set(
+                            Math.cos(angle + time * 0.4) * floatRadius,
+                            Math.sin(angle * 0.8 + time * 0.3) * 5,
+                            -10 + Math.sin(time + i * 0.15) * 4
+                        );
+                }
+                return pos;
+            }
+
+            updateRotation(form, time, handPos, target, attackProgress) {
+                const i = this.index;
+                const angle = (i / 36) * Math.PI * 2;
+                let targetRot = new THREE.Euler();
+                
+                switch(form) {
+                    case 'CIRCLE':
+                        targetRot.set(0, 0, angle + time * 0.6 + Math.PI/2);
+                        break;
+                    case 'ATTACK':
+                        if(attackProgress >= 0.5) {
+                            const lookAt = new THREE.Vector3(target.x, target.y, target.z - 40);
+                            this.mesh.lookAt(lookAt);
+                            this.mesh.rotateX(-Math.PI/2);
+                            return;
+                        } else {
+                            targetRot.set(0, 0, attackProgress > 0.3 ? Math.PI : 0);
+                        }
+                        break;
+                    case 'SPHERE':
+                        this.mesh.lookAt(handPos);
+                        this.mesh.rotateX(-Math.PI/2);
+                        targetRot.set(this.mesh.rotation.x, this.mesh.rotation.y, time * 6 + i * 0.5);
+                        break;
+                    case 'SCATTER':
+                        targetRot.set(Math.sin(time + i) * 0.3, Math.cos(time + i) * 0.3, time * 1.5 + i);
+                        break;
+                    default:
+                        targetRot.set(Math.sin(time + i * 0.5) * 0.25, Math.cos(time + i * 0.5) * 0.25, time * 0.6 + i);
+                }
+                
+                this.mesh.rotation.x += (targetRot.x - this.mesh.rotation.x) * 0.15;
+                this.mesh.rotation.y += (targetRot.y - this.mesh.rotation.y) * 0.15;
+                this.mesh.rotation.z += (targetRot.z - this.mesh.rotation.z) * 0.15;
+            }
+
+            updateTrail() {
+                this.trailPositions.unshift(this.mesh.position.clone());
+                if(this.trailPositions.length > this.maxTrail) this.trailPositions.pop();
+                
+                const positions = this.trailLine.geometry.attributes.position.array;
+                for(let i=0; i<this.trailPositions.length; i++) {
+                    positions[i*3] = this.trailPositions[i].x;
+                    positions[i*3+1] = this.trailPositions[i].y;
+                    positions[i*3+2] = this.trailPositions[i].z;
+                }
+                for(let i=this.trailPositions.length; i<this.maxTrail; i++) {
+                    positions[i*3] = positions[(i-1)*3] || 0;
+                    positions[i*3+1] = positions[(i-1)*3+1] || 0;
+                    positions[i*3+2] = positions[(i-1)*3+2] || 0;
+                }
+                this.trailLine.geometry.attributes.position.needsUpdate = true;
+                const speed = this.trailPositions.length > 1 ? 
+                    this.trailPositions[0].distanceTo(this.trailPositions[1]) : 0;
+                this.trailLine.material.opacity = Math.min(speed * 4, 0.8);
+            }
+
+            updateGlow(time) {
+                this.glowSprite.material.opacity = 0.3 + Math.abs(Math.sin(time * 2)) * 0.2;
+                this.glowSprite.scale.set(3 + Math.sin(time) * 0.3, 4 + Math.cos(time) * 0.3, 1);
+            }
+        }
+
+        // ================= 阵法特效（古铜色版） =================
+        class FormationEffects {
+            constructor(scene) {
+                this.scene = scene;
+                this.createShield();
+                this.createMagicCircle();
+                this.createAttackBeam(scene);
+            }
+
+            createShield() {
+                const geom = new THREE.SphereGeometry(4.5, 64, 64);
+                const mat = new THREE.MeshBasicMaterial({
+                    color: 0xb8860b, // 古铜色
+                    transparent: true,
+                    opacity: 0,
+                    wireframe: true,
+                    side: THREE.DoubleSide
+                });
+                this.shield = new THREE.Mesh(geom, mat);
+                this.scene.add(this.shield);
+            }
+
+            createMagicCircle() {
+                const geom = new THREE.RingGeometry(5.5, 6, 128);
+                const mat = new THREE.MeshBasicMaterial({
+                    color: 0xffd700,
+                    transparent: true,
+                    opacity: 0,
+                    side: THREE.DoubleSide,
+                    blending: THREE.AdditiveBlending
+                });
+                this.magicCircle = new THREE.Mesh(geom, mat);
+                this.magicCircle.rotation.x = -Math.PI/2;
+                this.magicCircle.position.y = -6;
+                this.scene.add(this.magicCircle);
+
+                const innerGeom = new THREE.RingGeometry(3.5, 3.8, 64);
+                this.innerCircle = new THREE.Mesh(innerGeom, mat.clone());
+                this.innerCircle.rotation.x = -Math.PI/2;
+                this.innerCircle.position.y = -6;
+                this.scene.add(this.innerCircle);
+            }
+
+            createAttackBeam(scene) {
+                const beamGeom = new THREE.CylinderGeometry(0.5, 2, 50, 32, 1, true);
+                const beamMat = new THREE.MeshBasicMaterial({
+                    color: 0xff4500, // 橙红色
+                    transparent: true,
+                    opacity: 0,
+                    blending: THREE.AdditiveBlending,
+                    side: THREE.DoubleSide
+                });
+                this.attackBeam = new THREE.Mesh(beamGeom, beamMat);
+                this.attackBeam.rotation.x = Math.PI / 2;
+                scene.add(this.attackBeam);
+            }
+
+            update(formation, time, handPos, attackProgress) {
+                if(formation === 'SPHERE') {
+                    this.shield.material.opacity = 0.3 + Math.sin(time * 4) * 0.1;
+                    this.shield.rotation.y = time * 0.5;
+                    this.shield.position.copy(handPos);
+                } else {
+                    this.shield.material.opacity *= 0.92;
+                }
+
+                if(formation === 'CIRCLE') {
+                    this.magicCircle.material.opacity = 0.5 + Math.sin(time * 1.5) * 0.2;
+                    this.magicCircle.rotation.z = time * 0.6;
+                    this.magicCircle.position.set(handPos.x, -6, handPos.y);
+                    this.innerCircle.material.opacity = 0.7;
+                    this.innerCircle.rotation.z = -time * 0.8;
+                    this.innerCircle.position.copy(this.magicCircle.position);
+                } else {
+                    this.magicCircle.material.opacity *= 0.92;
+                    this.innerCircle.material.opacity *= 0.92;
+                }
+
+                if(formation === 'ATTACK' && attackProgress > 0.5) {
+                    this.attackBeam.material.opacity = 0.4 + Math.sin(time * 10) * 0.2;
+                    this.attackBeam.position.set(handPos.x, handPos.y, handPos.z - 25);
+                    this.attackBeam.scale.set(1, 1 + attackProgress * 2, 1);
+                } else {
+                    this.attackBeam.material.opacity *= 0.9;
+                }
+            }
+        }
+
+        // ================= 主系统 =================
+        let scene, camera, renderer;
+        let effects;
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050505);
+            scene.fog = new THREE.FogExp2(0x050505, 0.02);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 0, 15);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            // 暖色灯光（适合青铜）
+            scene.add(new THREE.AmbientLight(0x404030, 2));
+            const dirLight = new THREE.DirectionalLight(0xfff8dc, 1.5);
+            dirLight.position.set(10, 15, 10);
+            scene.add(dirLight);
+            const rimLight = new THREE.DirectionalLight(0x4169e1, 0.5);
+            rimLight.position.set(-5, 0, -5);
+            scene.add(rimLight);
+
+            // 创建36把古剑
+            for(let i=0; i<36; i++) {
+                state.swords.push(new AncientSword(scene, i));
+            }
+
+            effects = new FormationEffects(scene);
+            
+            // 星空
+            const geom = new THREE.BufferGeometry();
+            const count = 3000;
+            const pos = new Float32Array(count * 3);
+            for(let i=0; i<count*3; i++) pos[i] = (Math.random()-0.5)*200;
+            geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            scene.add(new THREE.Points(geom, new THREE.PointsMaterial({ 
+                size: 0.12, color: 0xfff8dc, transparent: true 
+            })));
+
+            animate();
+            
+            setTimeout(() => {
+                document.getElementById('overlay').style.display = 'none';
+            }, 1000);
+
+            window.addEventListener('resize', onResize);
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('keydown', onKeyDown);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            state.time += 0.016;
+            const t = state.time;
+
+            // 阵型过渡
+            if(state.formation !== state.targetFormation) {
+                state.transitionProgress += 0.025;
+                if(state.transitionProgress >= 1) {
+                    state.prevFormation = state.formation;
+                    state.formation = state.targetFormation;
+                    state.transitionProgress = 0;
+                }
+            }
+
+            // 控制输入（非镜像）
+            let hx = 0, hy = 0, hz = 0;
+            if(state.handDetected) {
+                hx = state.handX * 10;
+                hy = state.handY * 10;
+                hz = Math.sin(t) * 2;
+            } else if(state.useMouse) {
+                hx = state.mouseX * 12;
+                hy = state.mouseY * 12;
+            } else {
+                hx = Math.sin(t * 0.4) * 4;
+                hy = Math.cos(t * 0.3) * 3;
+            }
+            const handPos = new THREE.Vector3(hx, hy, hz);
+
+            // 攻击阶段
+            if(state.formation === 'ATTACK') {
+                state.attackPhase += 0.008;
+                if(state.attackPhase > 1) state.attackPhase = 0;
+                const indicator = document.getElementById('attack-indicator');
+                if(state.attackPhase > 0.3 && state.attackPhase < 0.5) {
+                    indicator.classList.add('active');
+                } else {
+                    indicator.classList.remove('active');
+                }
+            } else {
+                state.attackPhase = 0;
+                document.getElementById('attack-indicator').classList.remove('active');
+            }
+
+            // 更新所有对象
+            state.swords.forEach(sword => {
+                sword.update(state.targetFormation, t, state.targetPoint, handPos, 
+                           state.attackPhase, state.transitionProgress, state.prevFormation);
+            });
+            
+            effects.update(state.targetFormation, t, handPos, state.attackPhase);
+
+            // 相机跟随
+            camera.position.x += (hx * 0.3 - camera.position.x) * 0.08;
+            camera.position.y += (hy * 0.3 - camera.position.y) * 0.08;
+            camera.position.z = 15 + Math.sin(t * 0.5) * 0.5;
+            camera.lookAt(hx * 0.2, hy * 0.2, -5);
+
+            renderer.render(scene, camera);
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function onMouseMove(e) {
+            if(!state.handDetected && state.useMouse) {
+                state.mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+                state.mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
+            }
+        }
+
+        function onKeyDown(e) {
+            const map = {'0':'IDLE','1':'CIRCLE','2':'ATTACK','3':'SPHERE','4':'SCATTER'};
+            if(map[e.key]) setFormation(map[e.key]);
+        }
+
+        // ================= UI控制 =================
+        function setFormation(form, fromGesture = false) {
+            if(state.targetFormation === form) return;
+            state.prevFormation = state.formation;
+            state.targetFormation = form;
+            state.transitionProgress = 0;
+            state.attackPhase = 0;
+
+            document.querySelectorAll('.controls .btn:not(#cam-btn)').forEach((btn, idx) => {
+                const forms = ['IDLE', 'CIRCLE', 'ATTACK', 'SPHERE', 'SCATTER'];
+                btn.classList.toggle('active', forms[idx] === form);
+            });
+
+            const names = {
+                'IDLE': ['收剑入鞘', '大周天运转', '无'],
+                'CIRCLE': ['剑阵展开', '大庚剑阵·圆', '周天环绕'],
+                'ATTACK': ['突击准备', '青元突刺', '锁定前方'],
+                'SPHERE': ['防御展开', '天罡护体', '全方位防御'],
+                'SCATTER': ['剑意爆发', '万剑归宗', '无差别打击']
+            };
+            const info = names[form];
+            document.getElementById('array-state').textContent = info[0];
+            document.getElementById('formation-name').textContent = info[1];
+            document.getElementById('target-info').textContent = info[2];
+
+            const icons = { 'IDLE': '🗡️', 'CIRCLE': '🛡️', 'ATTACK': '⚔️', 'SPHERE': '🔮', 'SCATTER': '✨' };
+            document.getElementById('gesture-icon').textContent = icons[form];
+            
+            if(fromGesture) {
+                document.getElementById('gesture-name').textContent = state.currentGesture;
+            }
+        }
+
+        async function toggleCamera() {
+            if(state.cameraActive) return;
+            
+            const video = document.getElementById('video-input');
+            const canvas = document.getElementById('debug-canvas');
+            const ctx = canvas.getContext('2d');
+            
+            document.getElementById('camera-box').style.display = 'block';
+            document.getElementById('mode-text').textContent = '启动中...';
+
+            try {
+                // 修复：移除URL空格，移除镜像
+                const hands = new Hands({locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                }});
+                
+                hands.setOptions({
+                    maxNumHands: 1,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                hands.onResults((results) => {
+                    canvas.width = video.videoWidth || 640;
+                    canvas.height = video.videoHeight || 480;
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                    if(results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                        state.handDetected = true;
+                        const lm = results.multiHandLandmarks[0];
+                        
+                        // 非镜像绘制
+                        drawConnectors(ctx, lm, HAND_CONNECTIONS, {color: '#00ffff', lineWidth: 3});
+                        drawLandmarks(ctx, lm, {color: '#ff0000', lineWidth: 2, radius: 4});
+
+                        // 非镜像坐标（关键修复）
+                        const palmX = (lm[0].x + lm[9].x) / 2;
+                        const palmY = (lm[0].y + lm[9].y) / 2;
+                        state.handX = (palmX * 2 - 1);  // 移除 (1 - x) 翻转
+                        state.handY = -(palmY * 2 - 1);
+
+                        document.getElementById('track-indicator').className = 'indicator active';
+                        document.getElementById('track-text').textContent = '追踪中';
+                        document.getElementById('mode-text').textContent = '手势控制';
+
+                        // 手势识别
+                        state.gestureDebounce++;
+                        if(state.gestureDebounce > 8) {
+                            const thumbTip = lm[4], indexTip = lm[8], middleTip = lm[12], ringTip = lm[16], pinkyTip = lm[20];
+                            
+                            const isOpen = indexTip.y < lm[6].y && middleTip.y < lm[10].y && ringTip.y < lm[14].y && pinkyTip.y < lm[18].y;
+                            const isFist = indexTip.y > lm[6].y && middleTip.y > lm[10].y && ringTip.y > lm[14].y && pinkyTip.y > lm[18].y;
+                            const isPoint = indexTip.y < lm[6].y && middleTip.y > lm[10].y;
+                            const isVictory = indexTip.y < lm[6].y && middleTip.y < lm[10].y && ringTip.y > lm[14].y;
+
+                            let gesture = 'NONE';
+                            if(isOpen) { gesture = '掌开·圆阵'; setFormation('CIRCLE', true); }
+                            else if(isFist) { gesture = '握拳·护体'; setFormation('SPHERE', true); }
+                            else if(isPoint) { gesture = '点指·突刺'; setFormation('ATTACK', true); }
+                            else if(isVictory) { gesture = 'V字·散阵'; setFormation('SCATTER', true); }
+
+                            if(gesture !== 'NONE') {
+                                state.currentGesture = gesture;
+                                document.getElementById('gesture-name').textContent = gesture;
+                            }
+                            state.gestureDebounce = 0;
+                        }
+                    } else {
+                        state.handDetected = false;
+                        document.getElementById('track-indicator').className = 'indicator warning';
+                        document.getElementById('track-text').textContent = '未检测';
+                    }
+                });
+
+                const camUtils = new Camera(video, {
+                    onFrame: async () => { await hands.send({image: video}); },
+                    width: 640, height: 480
+                });
+
+                await camUtils.start();
+                state.cameraActive = true;
+                document.getElementById('cam-btn').textContent = '运行中';
+                document.getElementById('cam-btn').classList.add('active');
+                
+            } catch(e) {
+                console.error(e);
+                alert('摄像头启动失败，请使用鼠标/键盘控制');
+                document.getElementById('mode-text').textContent = '鼠标控制';
+            }
+        }
+
+        function forceStart() {
+            document.getElementById('overlay').style.display = 'none';
+            init();
+            setFormation('IDLE');
+        }
+
+        window.onload = () => {
+            setTimeout(() => {
+                document.getElementById('start-btn').style.display = 'inline-block';
+            }, 1000);
+        };
+    </script>
+</body>
+</html>
